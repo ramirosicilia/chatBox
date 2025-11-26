@@ -1,0 +1,22 @@
+{
+  "name": "chatbox-proyecto-freelancer",
+  "version": "1.0.0",
+  "description": "chatBox",
+  "license": "ISC",
+  "author": "Rama",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}

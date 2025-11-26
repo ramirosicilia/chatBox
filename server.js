@@ -2,33 +2,32 @@
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import dotenv from "dotenv"
+import dotenv from "dotenv";
 import cors from "cors";
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
 
-dotenv.config()
+// Puerto con fallback
+const Port = process.env.PORT || 3000;
 
-const Port= process.env.PORT
 const server = createServer(app);
 
-
-// Permitir conexión desde tu React (localhost:5173 o 3000)
+// Socket.IO con CORS correcto
 const io = new Server(server, {
   cors: {
     origin: "*",
-  }
+    methods: ["GET", "POST"],
+  },
 });
 
 io.on("connection", (socket) => {
   console.log("Usuario conectado:", socket.id);
 
-  // Recibir mensaje
   socket.on("chat:mensaje", (msg) => {
     console.log("Mensaje recibido:", msg);
-
-    // reenviar a todos
     io.emit("chat:mensaje", msg);
   });
 

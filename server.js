@@ -31,6 +31,12 @@ io.on("connection", (socket) => {
     io.emit("chat:mensaje", msg);
   });
 
+  // ⭐ NUEVO: recibir y reenviar audio (base64)
+  socket.on("chat:audio", (audioMsg) => {
+    console.log("Audio recibido");
+    io.emit("chat:audio", audioMsg);
+  });
+
   socket.on("disconnect", () => {
     console.log("Usuario desconectado:", socket.id);
   });

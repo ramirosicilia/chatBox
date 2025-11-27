@@ -28,13 +28,20 @@ io.on("connection", (socket) => {
 
   socket.on("chat:mensaje", (msg) => {
     console.log("Mensaje recibido:", msg);
-    io.emit("chat:mensaje", msg);
+
+    // ⭐ AGREGO EMISOR SI NO VIENE DEL FRONT
+    const mensajeCompleto = { ...msg, emisor: msg.emisor || socket.id };
+
+    io.emit("chat:mensaje", mensajeCompleto);
   });
 
   // ⭐ NUEVO: recibir y reenviar audio (base64)
   socket.on("chat:audio", (audioMsg) => {
     console.log("Audio recibido");
-    io.emit("chat:audio", audioMsg);
+
+    const audioCompleto = { ...audioMsg, emisor: audioMsg.emisor || socket.id };
+
+    io.emit("chat:audio", audioCompleto);
   });
 
   socket.on("disconnect", () => {

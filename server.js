@@ -11,12 +11,14 @@ const app = express();
 app.use(cors());
 
 // ----------------------
-// ⭐ CONEXIÓN MONGO
+// ⭐ CONEXIÓN MONGO (Render + Atlas)
 // ----------------------
-mongoose
-  .connect(process.env.MONGO_URL)
-  .then(() => console.log("✅ MongoDB conectado"))
-  .catch((err) => console.log("❌ Error MongoDB:", err));
+await mongoose.connect(process.env.MONGO_URI, {
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+})
+.then(() => console.log("✅ MongoDB conectado"))
+.catch((err) => console.log("❌ Error MongoDB:", err));
 
 // ----------------------
 // ⭐ MODELO MENSAJE
@@ -34,12 +36,16 @@ const MensajeSchema = new mongoose.Schema(
 
 const Mensaje = mongoose.model("Mensaje", MensajeSchema);
 
-// Puerto
+// ----------------------
+// ⭐ PUERTO (Render asigna uno)
+// ----------------------
 const Port = process.env.PORT || 3000;
 
 const server = createServer(app);
 
-// Socket.IO con CORS correcto
+// ----------------------
+// ⭐ SOCKET.IO con CORS abierto
+// ----------------------
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -93,12 +99,14 @@ io.on("connection", async (socket) => {
     io.emit("chat:audio", guardado);
   });
 
-  // cuando se va
   socket.on("disconnect", () => {
     console.log("Usuario desconectado:", socket.id);
   });
 });
 
+// ----------------------
+// 🟢 INICIAR SERVIDOR
+// ----------------------
 server.listen(Port, () => {
-  console.log(`Servidor Socket.IO funcionando en http://localhost:${Port}`);
+  console.log(`Servidor funcionando en puerto ${Port}`);
 });

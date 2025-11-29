@@ -14,9 +14,9 @@ app.use(cors());
 // ⭐ CONEXIÓN MONGO (Render + Atlas)
 // ----------------------
 console.log("🔵 Intentando conectar a MongoDB...");
-console.log("🔵 MONGO_URI es:", process.env.MONGO_URI);
+console.log("🔵 MONGO_URI es:", process.env.MONGO_URL);
 
-await mongoose.connect(process.env.MONGO_URI, {
+await mongoose.connect(process.env.MONGO_URL, {
   serverSelectionTimeoutMS: 10000,
   socketTimeoutMS: 45000,
 })

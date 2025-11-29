@@ -8,7 +8,17 @@ import mongoose from "mongoose";
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+// CORS GLOBAL
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST"],
+}));
+
+// Ruta necesaria para Render
+app.get("/", (req, res) => {
+  res.send("Servidor funcionando ✔️");
+});
 
 // ----------------------
 // ⭐ CONEXIÓN MONGO (Render + Atlas)
@@ -16,13 +26,16 @@ app.use(cors());
 console.log("🔵 Intentando conectar a MongoDB...");
 console.log("🔵 MONGO_URI es:", process.env.MONGO_URL);
 
-await mongoose.connect(process.env.MONGO_URL, {
-  serverSelectionTimeoutMS: 10000,
-  socketTimeoutMS: 45000,
-  family: 4 // 
-})
-.then(() => console.log("✅ Conexión a MongoDB exitosa"))
-.catch((err) => console.log("❌ Error al conectar a MongoDB:", err));
+try {
+  await mongoose.connect(process.env.MONGO_URL, {
+    serverSelectionTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+    family: 4, // solo IPv4
+  });
+  console.log("✅ Conexión a MongoDB exitosa");
+} catch (err) {
+  console.log("❌ Error al conectar a MongoDB:", err);
+}
 
 mongoose.connection.on("connected", () => {
   console.log("🟢 EVENTO: MongoDB connected()");
@@ -43,7 +56,7 @@ console.log("📦 Inicializando modelo Mensaje...");
 
 const MensajeSchema = new mongoose.Schema(
   {
-    tipo: String, 
+    tipo: String,
     texto: String,
     audio: String,
     hora: String,
@@ -65,7 +78,7 @@ console.log("🌍 Puerto configurado:", Port);
 const server = createServer(app);
 
 // ----------------------
-// ⭐ SOCKET.IO con CORS
+// ⭐ SOCKET.IO con CORS + WebSockets
 // ----------------------
 console.log("⚡ Configurando Socket.IO...");
 
@@ -74,6 +87,7 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"],
   },
+  transports: ["websocket"], // Render lo necesita
 });
 
 console.log("⚡ Socket.IO listo.");
@@ -93,9 +107,7 @@ io.on("connection", async (socket) => {
     console.log("❌ Error obteniendo historial:", err);
   }
 
-  // ---------------------------------------
   // 📩 MENSAJE DE TEXTO
-  // ---------------------------------------
   socket.on("chat:mensaje", async (msg) => {
     console.log("💬 Evento chat:mensaje recibido:", msg);
 
@@ -107,16 +119,13 @@ io.on("connection", async (socket) => {
     try {
       console.log("💾 Guardando mensaje en MongoDB...", mensajeCompleto);
       const guardado = await Mensaje.create(mensajeCompleto);
-      console.log("💾 Mensaje guardado:", guardado);
       io.emit("chat:mensaje", guardado);
     } catch (err) {
       console.log("❌ Error guardando mensaje:", err);
     }
   });
 
-  // ---------------------------------------
   // 🎤 MENSAJE DE AUDIO
-  // ---------------------------------------
   socket.on("chat:audio", async (audioMsg) => {
     console.log("🎤 Evento chat:audio recibido");
 
@@ -128,7 +137,6 @@ io.on("connection", async (socket) => {
     try {
       console.log("💾 Guardando audio en MongoDB...");
       const guardado = await Mensaje.create(audioCompleto);
-      console.log("💾 Audio guardado:", guardado);
       io.emit("chat:audio", guardado);
     } catch (err) {
       console.log("❌ Error guardando audio:", err);
@@ -143,6 +151,6 @@ io.on("connection", async (socket) => {
 // ----------------------
 // 🟢 INICIAR SERVIDOR
 // ----------------------
-server.listen(Port, () => {
+server.listen(Port, "0.0.0.0", () => {
   console.log(`🚀 Servidor funcionando en puerto ${Port}`);
 });

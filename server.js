@@ -19,6 +19,7 @@ console.log("🔵 MONGO_URI es:", process.env.MONGO_URL);
 await mongoose.connect(process.env.MONGO_URL, {
   serverSelectionTimeoutMS: 10000,
   socketTimeoutMS: 45000,
+  family: 4 // 
 })
 .then(() => console.log("✅ Conexión a MongoDB exitosa"))
 .catch((err) => console.log("❌ Error al conectar a MongoDB:", err));

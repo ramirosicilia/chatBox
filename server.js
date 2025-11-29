@@ -30,7 +30,7 @@ try {
   await mongoose.connect(process.env.MONGO_URL, {
     serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
-    family: 4, // solo IPv4
+    family: 4,
   });
   console.log("✅ Conexión a MongoDB exitosa");
 } catch (err) {
@@ -87,7 +87,7 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"],
   },
-  transports: ["websocket"], // Render lo necesita
+  transports: ["websocket"],
 });
 
 console.log("⚡ Socket.IO listo.");
@@ -102,7 +102,12 @@ io.on("connection", async (socket) => {
     console.log("📜 Buscando historial de mensajes...");
     const historial = await Mensaje.find().sort({ createdAt: 1 });
     console.log("📜 Historial encontrado:", historial.length, "mensajes.");
-    socket.emit("historial", historial);
+
+    // 🔥🔥🔥 ACÁ ESTÁ EL CAMBIO QUE FALTABA 🔥🔥🔥
+    setTimeout(() => {
+      socket.emit("historial", historial);
+    }, 300); // dale tiempo al socket a inicializar completamente
+
   } catch (err) {
     console.log("❌ Error obteniendo historial:", err);
   }

@@ -26,10 +26,10 @@ app.get("/", (req, res) => {
 // ⭐ CONEXIÓN MONGO
 // ----------------------
 console.log("🔵 Intentando conectar a MongoDB...");
-console.log("🔵 MONGO_URL es:", process.env.MONGO_URL);
+console.log("🔵 MONGO_URL es:", process.env.MONGO_URI);
 
 try {
-  await mongoose.connect(process.env.MONGO_URL, {
+  await mongoose.connect(process.env.MONGO_URI, {
     serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
     family: 4,

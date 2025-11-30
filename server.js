@@ -10,10 +10,12 @@ dotenv.config();
 const app = express();
 
 // CORS GLOBAL
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST"],
-}));
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST"],
+  })
+);
 
 // Ruta necesaria para Render
 app.get("/", (req, res) => {
@@ -21,10 +23,10 @@ app.get("/", (req, res) => {
 });
 
 // ----------------------
-// ⭐ CONEXIÓN MONGO (Render + Atlas)
+// ⭐ CONEXIÓN MONGO
 // ----------------------
 console.log("🔵 Intentando conectar a MongoDB...");
-console.log("🔵 MONGO_URI es:", process.env.MONGO_URL);
+console.log("🔵 MONGO_URL es:", process.env.MONGO_URL);
 
 try {
   await mongoose.connect(process.env.MONGO_URL, {
@@ -37,23 +39,19 @@ try {
   console.log("❌ Error al conectar a MongoDB:", err);
 }
 
-mongoose.connection.on("connected", () => {
-  console.log("🟢 EVENTO: MongoDB connected()");
-});
-
-mongoose.connection.on("error", (err) => {
-  console.log("🔴 EVENTO: MongoDB error:", err);
-});
-
-mongoose.connection.on("disconnected", () => {
-  console.log("🟠 EVENTO: MongoDB disconnected()");
-});
+mongoose.connection.on("connected", () =>
+  console.log("🟢 EVENTO: MongoDB connected()")
+);
+mongoose.connection.on("error", (err) =>
+  console.log("🔴 EVENTO: MongoDB error:", err)
+);
+mongoose.connection.on("disconnected", () =>
+  console.log("🟠 EVENTO: MongoDB disconnected()")
+);
 
 // ----------------------
 // ⭐ MODELO MENSAJE
 // ----------------------
-console.log("📦 Inicializando modelo Mensaje...");
-
 const MensajeSchema = new mongoose.Schema(
   {
     tipo: String,
@@ -67,21 +65,16 @@ const MensajeSchema = new mongoose.Schema(
 
 const Mensaje = mongoose.model("Mensaje", MensajeSchema);
 
-console.log("📦 Modelo Mensaje listo.");
-
 // ----------------------
-// ⭐ PUERTO (Render asigna uno)
+// ⭐ PUERTO
 // ----------------------
 const Port = process.env.PORT || 3000;
-console.log("🌍 Puerto configurado:", Port);
 
 const server = createServer(app);
 
 // ----------------------
-// ⭐ SOCKET.IO con CORS + WebSockets
+// ⭐ SOCKET.IO
 // ----------------------
-console.log("⚡ Configurando Socket.IO...");
-
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -90,24 +83,29 @@ const io = new Server(server, {
   transports: ["websocket"],
 });
 
-console.log("⚡ Socket.IO listo.");
-
 // ----------------------
 // ⭐ SOCKETS
 // ----------------------
 io.on("connection", async (socket) => {
   console.log("🟢 Usuario conectado:", socket.id);
 
+  // Enviar historial al conectar
   try {
     console.log("📜 Buscando historial de mensajes...");
-    const historial = await Mensaje.find().sort({ createdAt: 1 });
-    console.log("📜 Historial encontrado:", historial.length, "mensajes.");
+    const historialBruto = await Mensaje.find().sort({ createdAt: 1 });
 
-    // 🔥🔥🔥 ACÁ ESTÁ EL CAMBIO QUE FALTABA 🔥🔥🔥
+    // Limpiar formato para que coincida con el frontend
+    const historial = historialBruto.map((m) => ({
+      tipo: m.tipo,
+      texto: m.texto || null,
+      audio: m.audio || null,
+      hora: m.hora,
+      emisor: m.emisor,
+    }));
+
     setTimeout(() => {
       socket.emit("historial", historial);
-    }, 300); // dale tiempo al socket a inicializar completamente
-
+    }, 300);
   } catch (err) {
     console.log("❌ Error obteniendo historial:", err);
   }
@@ -117,14 +115,24 @@ io.on("connection", async (socket) => {
     console.log("💬 Evento chat:mensaje recibido:", msg);
 
     const mensajeCompleto = {
-      ...msg,
+      tipo: "texto",
+      texto: msg.texto,
+      hora: msg.hora,
       emisor: msg.emisor || socket.id,
     };
 
     try {
-      console.log("💾 Guardando mensaje en MongoDB...", mensajeCompleto);
       const guardado = await Mensaje.create(mensajeCompleto);
-      io.emit("chat:mensaje", guardado);
+
+      const mensajeEmitido = {
+        tipo: guardado.tipo,
+        texto: guardado.texto,
+        hora: guardado.hora,
+        emisor: guardado.emisor,
+        audio: null,
+      };
+
+      io.emit("chat:mensaje", mensajeEmitido);
     } catch (err) {
       console.log("❌ Error guardando mensaje:", err);
     }
@@ -135,14 +143,24 @@ io.on("connection", async (socket) => {
     console.log("🎤 Evento chat:audio recibido");
 
     const audioCompleto = {
-      ...audioMsg,
+      tipo: "audio",
+      audio: audioMsg.audio,
+      hora: audioMsg.hora,
       emisor: audioMsg.emisor || socket.id,
     };
 
     try {
-      console.log("💾 Guardando audio en MongoDB...");
       const guardado = await Mensaje.create(audioCompleto);
-      io.emit("chat:audio", guardado);
+
+      const audioEmitido = {
+        tipo: guardado.tipo,
+        audio: guardado.audio,
+        hora: guardado.hora,
+        emisor: guardado.emisor,
+        texto: null,
+      };
+
+      io.emit("chat:audio", audioEmitido);
     } catch (err) {
       console.log("❌ Error guardando audio:", err);
     }

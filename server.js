@@ -176,7 +176,7 @@ io.on("connection", async (socket) => {
 // ----------------------
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, "0.0.0.0", () => {
+ server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor escuchando correctamente en 0.0.0.0:${PORT}`);
 });
 

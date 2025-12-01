@@ -93,7 +93,17 @@ const io = new Server(server, {
 io.on("connection", async (socket) => {
   console.log("🟢 Usuario conectado:", socket.id);
 
-  // Enviar historial al conectar
+  // -------------------------------------------
+  // ⭐ RECIBIR NOMBRE DEL USUARIO
+  // -------------------------------------------
+  socket.on("setNombre", (nombre) => {
+    socket.data.nombre = nombre;
+    console.log(`🟢 Nombre seteado para ${socket.id}: ${nombre}`);
+  });
+
+  // -------------------------------------------
+  // ⭐ HISTORIAL
+  // -------------------------------------------
   try {
     const historialBruto = await Mensaje.find().sort({ createdAt: 1 });
 
@@ -112,15 +122,19 @@ io.on("connection", async (socket) => {
     console.log("❌ Error obteniendo historial:", err);
   }
 
+  // -------------------------------------------
   // 📩 MENSAJE DE TEXTO
+  // -------------------------------------------
   socket.on("chat:mensaje", async (msg) => {
     console.log("💬 Evento chat:mensaje recibido:", msg);
+
+    const nombre = socket.data.nombre || msg.emisor || socket.id;
 
     const mensajeCompleto = {
       tipo: "texto",
       texto: msg.texto,
       hora: msg.hora,
-      emisor: msg.emisor || socket.id,
+      emisor: nombre,
     };
 
     try {
@@ -138,15 +152,19 @@ io.on("connection", async (socket) => {
     }
   });
 
+  // -------------------------------------------
   // 🎤 MENSAJE DE AUDIO
+  // -------------------------------------------
   socket.on("chat:audio", async (audioMsg) => {
     console.log("🎤 Evento chat:audio recibido");
+
+    const nombre = socket.data.nombre || audioMsg.emisor || socket.id;
 
     const audioCompleto = {
       tipo: "audio",
       audio: audioMsg.audio,
       hora: audioMsg.hora,
-      emisor: audioMsg.emisor || socket.id,
+      emisor: nombre,
     };
 
     try {
@@ -164,6 +182,9 @@ io.on("connection", async (socket) => {
     }
   });
 
+  //----------------------------
+  // 🔌 DESCONECTAR
+  //----------------------------
   socket.on("disconnect", () => {
     console.log("🔴 Usuario desconectado:", socket.id);
   });

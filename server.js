@@ -9,7 +9,9 @@ dotenv.config();
 
 const app = express();
 
-// CORS GLOBAL
+// ----------------------
+// ⭐ CORS GLOBAL
+// ----------------------
 app.use(
   cors({
     origin: "*",
@@ -17,7 +19,9 @@ app.use(
   })
 );
 
-// Ruta necesaria para Render
+// ----------------------
+// ⭐ RUTA PRINCIPAL
+// ----------------------
 app.get("/", (req, res) => {
   res.send("Servidor funcionando ✔️");
 });
@@ -68,7 +72,7 @@ const Mensaje = mongoose.model("Mensaje", MensajeSchema);
 // ----------------------
 // ⭐ PUERTO
 // ----------------------
-const Port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 const server = createServer(app);
 
@@ -91,10 +95,8 @@ io.on("connection", async (socket) => {
 
   // Enviar historial al conectar
   try {
-    console.log("📜 Buscando historial de mensajes...");
     const historialBruto = await Mensaje.find().sort({ createdAt: 1 });
 
-    // Limpiar formato para que coincida con el frontend
     const historial = historialBruto.map((m) => ({
       tipo: m.tipo,
       texto: m.texto || null,
@@ -124,15 +126,13 @@ io.on("connection", async (socket) => {
     try {
       const guardado = await Mensaje.create(mensajeCompleto);
 
-      const mensajeEmitido = {
-        tipo: guardado.tipo,
+      io.emit("chat:mensaje", {
+        tipo: "texto",
         texto: guardado.texto,
         hora: guardado.hora,
         emisor: guardado.emisor,
         audio: null,
-      };
-
-      io.emit("chat:mensaje", mensajeEmitido);
+      });
     } catch (err) {
       console.log("❌ Error guardando mensaje:", err);
     }
@@ -152,15 +152,13 @@ io.on("connection", async (socket) => {
     try {
       const guardado = await Mensaje.create(audioCompleto);
 
-      const audioEmitido = {
-        tipo: guardado.tipo,
+      io.emit("chat:audio", {
+        tipo: "audio",
         audio: guardado.audio,
         hora: guardado.hora,
         emisor: guardado.emisor,
         texto: null,
-      };
-
-      io.emit("chat:audio", audioEmitido);
+      });
     } catch (err) {
       console.log("❌ Error guardando audio:", err);
     }
@@ -174,9 +172,6 @@ io.on("connection", async (socket) => {
 // ----------------------
 // 🟢 INICIAR SERVIDOR
 // ----------------------
-const PORT = process.env.PORT || 3000;
-
- server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor escuchando correctamente en 0.0.0.0:${PORT}`);
 });
-

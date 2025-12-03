@@ -396,18 +396,12 @@ io.on("connection", async (socket) => {
     // clearHistory (admin required)
     // --------------------------
     socket.on("clearHistory", async ({ sala }) => {
-      try {
-        const meta = onlineUsers.get(socket.id);
-        if (!meta?.isAdmin) return socket.emit("error", { msg: "admin required for clearHistory" });
+  await Mensaje.deleteMany({ sala });
 
-        await Mensaje.updateMany({ sala }, { deleted: true });
-        // notificar a la sala con historial vacío (formato limpio)
-        io.to(sala).emit("historial", []);
-        Log.create({ level: "info", msg: "clearHistory", meta: { by: socket.id, sala } }).catch(() => {});
-      } catch (err) {
-        console.error("clearHistory error", err);
-      }
-    });
+  // avisar a todos los usuarios de esa sala que se borró
+  io.to(sala).emit("roomCleared", { sala });
+});
+
 
     // --------------------------
     // deleteMessage (por id) (admin required)

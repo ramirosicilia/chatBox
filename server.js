@@ -125,6 +125,7 @@ app.get("/api/rooms", async (req, res) => {
 app.get("/api/mensajes/:sala", async (req, res) => {
   const { sala } = req.params;
   try {
+    // traemos solo mensajes no borrados
     const msgs = await Mensaje.find({ sala, deleted: false }).sort({ createdAt: 1 });
     const clean = msgs.map((m) => ({
       id: m._id,
@@ -168,17 +169,21 @@ app.get("/api/usuarios", (req, res) => {
   res.json({ ok: true, usuarios });
 });
 
-// DELETE mensaje soft-delete
+// DELETE mensaje soft-delete (REST) -> ahora vacía texto/audio y limpia físicamente
 app.delete("/api/mensajes/:id", async (req, res) => {
   if (!checkAdminReq(req)) return res.status(403).json({ ok: false, msg: "admin token required" });
   try {
     const { id } = req.params;
-    const m = await Mensaje.findByIdAndUpdate(id, { deleted: true }, { new: true });
+    const m = await Mensaje.findByIdAndUpdate(
+      id,
+      { deleted: true, texto: null, audio: null },
+      { new: true }
+    );
     if (m) io.to(m.sala).emit("messageDeleted", { id: m._id });
     res.json({ ok: true });
 
     // 🔥 AGREGADO: limpiar deleted físicos
-    purgeDeletedMessages();
+    await purgeDeletedMessages();
   } catch (err) {
     await Log.create({ level: "error", msg: "DELETE /api/mensajes/:id error", meta: { err } }).catch(() => {});
     res.status(500).json({ ok: false });
@@ -230,14 +235,20 @@ io.on("connection", async (socket) => {
     console.log(`🟢 Conexión: ${socket.id} - IP: ${ip}`);
     await Log.create({ level: "info", msg: "socket connect", meta: { socketId: socket.id, ip } }).catch(() => {});
 
+    // 🔧 Guardar usuarioId que envía el cliente en la query (si existe)
+    const usuarioIdFromQuery = (socket.handshake?.query && socket.handshake.query.usuarioId) || null;
+
     onlineUsers.set(socket.id, {
       socketId: socket.id,
       nombre: "Anon",
       sala: "global",
-      usuarioId: null,
+      usuarioId: usuarioIdFromQuery,
       ip,
       isAdmin: false,
     });
+
+    // también lo guardamos en socket.data para validaciones rápidas
+    socket.data.usuarioId = usuarioIdFromQuery || null;
 
     broadcastUsuarios();
 
@@ -384,35 +395,91 @@ io.on("connection", async (socket) => {
       }
     });
 
-    // clearHistory
+    // 🔧 clearMyHistory: borra TODOS los mensajes del usuario (o de la sala que pases)
+    // payload: { sala? }  -> si no viene sala, borra en todas las salas para ese usuario
+    socket.on("clearMyHistory", async ({ sala } = {}) => {
+      try {
+        const meta = onlineUsers.get(socket.id) || {};
+        const requesterUid = meta?.usuarioId || socket.data?.usuarioId;
+        if (!requesterUid) return socket.emit("error", { msg: "usuarioId requerido para clearMyHistory" });
+
+        const condicion = { usuarioId: requesterUid };
+        if (sala) condicion.sala = sala;
+
+        // borrado físico directo para que NO vuelvan
+        await Mensaje.deleteMany(condicion);
+
+        // emitir historial actualizado a la sala (o a "global") para que clientes se sincronicen
+        const targetSala = sala || "global";
+        const historialRaw = await Mensaje.find({ sala: targetSala, deleted: false }).sort({ createdAt: 1 });
+        const historial = historialRaw.map((m) => ({
+          id: m._id,
+          sala: m.sala,
+          tipo: m.tipo,
+          texto: m.texto,
+          audio: m.audio,
+          hora: m.hora,
+          emisor: m.emisor,
+          nombre: m.nombre,
+          usuarioId: m.usuarioId,
+          ip: m.ip,
+          deleted: m.deleted,
+          createdAt: m.createdAt,
+          updatedAt: m.updatedAt,
+        }));
+
+        // emitimos historial actualizado
+        io.to(targetSala).emit("historial", historial);
+      } catch (err) {
+        console.error("clearMyHistory error", err);
+      }
+    });
+
+    // clearHistory (admin required) -> ahora vacía texto/audio y luego purga
     socket.on("clearHistory", async ({ sala }) => {
       try {
         const meta = onlineUsers.get(socket.id);
         if (!meta?.isAdmin) return socket.emit("error", { msg: "admin required for clearHistory" });
 
-        await Mensaje.updateMany({ sala }, { deleted: true });
+        await Mensaje.updateMany(
+          { sala },
+          { deleted: true, texto: null, audio: null }
+        );
         io.to(sala).emit("historial", []);
 
         // 🔥 AGREGADO → limpieza física
-        purgeDeletedMessages();
+        await purgeDeletedMessages();
       } catch (err) {
         console.error("clearHistory error", err);
       }
     });
 
-    // deleteMessage (soft)
+    // deleteMessage (por id) -> admin o autor del mensaje
     socket.on("deleteMessage", async ({ id }) => {
       try {
-        const meta = onlineUsers.get(socket.id);
-        if (!meta?.isAdmin) return socket.emit("error", { msg: "admin required for deleteMessage" });
+        const meta = onlineUsers.get(socket.id) || {};
+        const m = await Mensaje.findById(id);
+        if (!m) return socket.emit("error", { msg: "mensaje no encontrado" });
 
-        const m = await Mensaje.findByIdAndUpdate(id, { deleted: true }, { new: true });
-        if (m) {
-          io.to(m.sala).emit("messageDeleted", { id: m._id });
+        const isAdmin = !!meta?.isAdmin;
+        const isOwner = meta?.usuarioId && String(meta.usuarioId) === String(m.usuarioId);
+
+        if (!isAdmin && !isOwner) {
+          return socket.emit("error", { msg: "solo admin o autor pueden borrar este mensaje" });
+        }
+
+        const updated = await Mensaje.findByIdAndUpdate(
+          id,
+          { deleted: true, texto: null, audio: null },
+          { new: true }
+        );
+        if (updated) {
+          io.to(updated.sala).emit("messageDeleted", { id: updated._id });
+          Log.create({ level: "info", msg: "messageDeleted", meta: { id: updated._id, by: socket.id } }).catch(() => {});
         }
 
         // 🔥 AGREGADO → limpieza física automática
-        purgeDeletedMessages();
+        await purgeDeletedMessages();
       } catch (err) {
         console.error("deleteMessage error", err);
       }

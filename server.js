@@ -71,7 +71,7 @@ const Mensaje = mongoose.model("Mensaje", MensajeSchema);
 // ----------------------
 // Usuario conectado (no persistente): map socketId -> meta
 // ----------------------
-const onlineUsers = new Map(); // socketId => { nombre, sala, usuarioId, ip, isAdmin }
+const onlineUsers = new Map(); // socketId => { nombre, sala, usuarioId, ip, isAdmin, socketId }
 
 // ----------------------
 // Conexión Mongo
@@ -111,12 +111,27 @@ app.get("/api/rooms", async (req, res) => {
   }
 });
 
-// GET mensajes de una sala (incluye deleted=false)
+// GET mensajes de una sala (incluye deleted=false) -> devuelve mensajes "limpios"
 app.get("/api/mensajes/:sala", async (req, res) => {
   const { sala } = req.params;
   try {
     const msgs = await Mensaje.find({ sala, deleted: false }).sort({ createdAt: 1 });
-    res.json({ ok: true, mensajes: msgs });
+    const clean = msgs.map((m) => ({
+      id: m._id,
+      sala: m.sala,
+      tipo: m.tipo,
+      texto: m.texto,
+      audio: m.audio,
+      hora: m.hora,
+      emisor: m.emisor,
+      nombre: m.nombre,
+      usuarioId: m.usuarioId,
+      ip: m.ip,
+      deleted: m.deleted,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+    }));
+    res.json({ ok: true, mensajes: clean });
   } catch (err) {
     await Log.create({ level: "error", msg: "GET /api/mensajes/:sala error", meta: { err } }).catch(() => {});
     res.status(500).json({ ok: false });
@@ -131,17 +146,27 @@ const checkAdminReq = (req) => {
 
 app.get("/api/usuarios", (req, res) => {
   if (!checkAdminReq(req)) return res.status(403).json({ ok: false, msg: "admin token required" });
-  const usuarios = Array.from(onlineUsers.values()).map(u => ({ nombre: u.nombre, sala: u.sala, usuarioId: u.usuarioId, ip: u.ip, socketId: u.socketId, isAdmin: !!u.isAdmin }));
+  const usuarios = Array.from(onlineUsers.values()).map((u) => ({
+    nombre: u.nombre,
+    sala: u.sala,
+    usuarioId: u.usuarioId,
+    ip: u.ip,
+    socketId: u.socketId,
+    isAdmin: !!u.isAdmin,
+  }));
   res.json({ ok: true, usuarios });
 });
 
-// DELETE mensaje por id -> admin required
+// DELETE mensaje por id -> admin required (soft delete) - además emitimos update a la sala
 app.delete("/api/mensajes/:id", async (req, res) => {
   if (!checkAdminReq(req)) return res.status(403).json({ ok: false, msg: "admin token required" });
   try {
     const { id } = req.params;
-    await Mensaje.findByIdAndUpdate(id, { deleted: true });
-    // notify rooms? we don't know sala here, but emit general event
+    const m = await Mensaje.findByIdAndUpdate(id, { deleted: true }, { new: true });
+    if (m) {
+      // notificar a la sala correspondiente
+      io.to(m.sala).emit("messageDeleted", { id: m._id });
+    }
     res.json({ ok: true });
   } catch (err) {
     await Log.create({ level: "error", msg: "DELETE /api/mensajes/:id error", meta: { err } }).catch(() => {});
@@ -161,7 +186,14 @@ const io = new Server(server, {
 
 // Helper: enviar lista de usuarios a admins (o a todos si querés)
 const broadcastUsuarios = () => {
-  const lista = Array.from(onlineUsers.entries()).map(([socketId, u]) => ({ socketId, nombre: u.nombre, sala: u.sala, usuarioId: u.usuarioId, ip: u.ip, isAdmin: !!u.isAdmin }));
+  const lista = Array.from(onlineUsers.entries()).map(([socketId, u]) => ({
+    socketId,
+    nombre: u.nombre,
+    sala: u.sala,
+    usuarioId: u.usuarioId,
+    ip: u.ip,
+    isAdmin: !!u.isAdmin,
+  }));
   // enviar solo a sockets que sean admins
   io.sockets.sockets.forEach((s) => {
     const meta = onlineUsers.get(s.id);
@@ -225,8 +257,23 @@ io.on("connection", async (socket) => {
         meta.sala = sala;
         onlineUsers.set(socket.id, meta);
         Log.create({ level: "info", msg: "joinRoom", meta: { socketId: socket.id, sala } }).catch(() => {});
-        // enviar historial de esa sala (sin deleted)
-        const historial = await Mensaje.find({ sala, deleted: false }).sort({ createdAt: 1 });
+        // enviar historial de esa sala (sin deleted) y en formato limpio
+        const historialRaw = await Mensaje.find({ sala, deleted: false }).sort({ createdAt: 1 });
+        const historial = historialRaw.map((m) => ({
+          id: m._id,
+          sala: m.sala,
+          tipo: m.tipo,
+          texto: m.texto,
+          audio: m.audio,
+          hora: m.hora,
+          emisor: m.emisor,
+          nombre: m.nombre,
+          usuarioId: m.usuarioId,
+          ip: m.ip,
+          deleted: m.deleted,
+          createdAt: m.createdAt,
+          updatedAt: m.updatedAt,
+        }));
         socket.emit("historial", historial);
         broadcastUsuarios();
       } catch (err) {
@@ -273,7 +320,25 @@ io.on("connection", async (socket) => {
 
         const guardado = await Mensaje.create(mensajeCompleto);
         Log.create({ level: "info", msg: "mensaje creado", meta: { id: guardado._id, sala } }).catch(() => {});
-        io.to(sala).emit("chat:mensaje", guardado);
+
+        // Emitir mensaje limpio (sin objetos mongoose) solo a la sala
+        const emitMsg = {
+          id: guardado._id,
+          sala: guardado.sala,
+          tipo: guardado.tipo,
+          texto: guardado.texto,
+          audio: guardado.audio || null,
+          hora: guardado.hora,
+          emisor: guardado.emisor,
+          nombre: guardado.nombre,
+          usuarioId: guardado.usuarioId,
+          ip: guardado.ip,
+          deleted: guardado.deleted,
+          createdAt: guardado.createdAt,
+          updatedAt: guardado.updatedAt,
+        };
+
+        io.to(sala).emit("chat:mensaje", emitMsg);
       } catch (err) {
         console.error("chat:mensaje error", err);
         await Log.create({ level: "error", msg: "chat:mensaje error", meta: { err } }).catch(() => {});
@@ -302,7 +367,25 @@ io.on("connection", async (socket) => {
         };
 
         const guardado = await Mensaje.create(audioCompleto);
-        io.to(sala).emit("chat:audio", guardado);
+
+        // Emitir audio limpio solo a la sala
+        const emitAudio = {
+          id: guardado._id,
+          sala: guardado.sala,
+          tipo: guardado.tipo,
+          texto: guardado.texto || null,
+          audio: guardado.audio,
+          hora: guardado.hora,
+          emisor: guardado.emisor,
+          nombre: guardado.nombre,
+          usuarioId: guardado.usuarioId,
+          ip: guardado.ip,
+          deleted: guardado.deleted,
+          createdAt: guardado.createdAt,
+          updatedAt: guardado.updatedAt,
+        };
+
+        io.to(sala).emit("chat:audio", emitAudio);
       } catch (err) {
         console.error("chat:audio error", err);
         await Log.create({ level: "error", msg: "chat:audio error", meta: { err } }).catch(() => {});
@@ -318,7 +401,8 @@ io.on("connection", async (socket) => {
         if (!meta?.isAdmin) return socket.emit("error", { msg: "admin required for clearHistory" });
 
         await Mensaje.updateMany({ sala }, { deleted: true });
-        io.to(sala).emit("historial", []); // notificar a la sala
+        // notificar a la sala con historial vacío (formato limpio)
+        io.to(sala).emit("historial", []);
         Log.create({ level: "info", msg: "clearHistory", meta: { by: socket.id, sala } }).catch(() => {});
       } catch (err) {
         console.error("clearHistory error", err);
@@ -351,7 +435,6 @@ io.on("connection", async (socket) => {
       onlineUsers.delete(socket.id);
       broadcastUsuarios();
     });
-
   } catch (err) {
     console.error("connection handler error", err);
   }

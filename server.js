@@ -1,3 +1,21 @@
+/**
+ * server.js
+ * Backend con:
+ * - rooms
+ * - usuarios conectados
+ * - typing on/off
+ * - guardado de IP
+ * - admins por token (ADMIN_TOKEN)
+ * - logs en Mongo (colección Logs)
+ * - mensajes con sala, soft-delete
+ * - endpoints REST (rooms, mensajes por sala, usuarios online)
+ *
+ * Requisitos .env:
+ * MONGO_URI=...
+ * PORT=...
+ * ADMIN_TOKEN=un-token-seguro-aqui
+ */
+
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -8,26 +26,55 @@ import mongoose from "mongoose";
 dotenv.config();
 
 const app = express();
-
-// ----------------------
-// ⭐ CORS GLOBAL
-// ----------------------
+app.use(express.json());
 app.use(
   cors({
     origin: "*",
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "DELETE"],
   })
 );
 
 // ----------------------
-// ⭐ RUTA PRINCIPAL
+// Logs simples en Mongo
 // ----------------------
-app.get("/", (req, res) => {
-  res.send("Servidor funcionando ✔️");
-});
+const LogSchema = new mongoose.Schema(
+  {
+    level: { type: String, default: "info" },
+    msg: String,
+    meta: Object,
+  },
+  { timestamps: true }
+);
+const Log = mongoose.model("Log", LogSchema);
 
 // ----------------------
-// ⭐ CONEXIÓN MONGO
+// Mensaje schema mejorado
+// ----------------------
+const MensajeSchema = new mongoose.Schema(
+  {
+    sala: { type: String, default: "global" }, // sala/room
+    tipo: String,
+    texto: String,
+    audio: String,
+    hora: String,
+    emisor: String,
+    nombre: String,
+    usuarioId: String,
+    ip: String,
+    deleted: { type: Boolean, default: false }, // soft delete
+  },
+  { timestamps: true }
+);
+
+const Mensaje = mongoose.model("Mensaje", MensajeSchema);
+
+// ----------------------
+// Usuario conectado (no persistente): map socketId -> meta
+// ----------------------
+const onlineUsers = new Map(); // socketId => { nombre, sala, usuarioId, ip, isAdmin }
+
+// ----------------------
+// Conexión Mongo
 // ----------------------
 console.log("🔵 Intentando conectar a MongoDB...");
 console.log("🔵 MONGO_URL es:", process.env.MONGO_URI);
@@ -41,158 +88,275 @@ try {
   console.log("✅ Conexión a MongoDB exitosa");
 } catch (err) {
   console.log("❌ Error al conectar a MongoDB:", err);
+  await Log.create({ level: "error", msg: "Error conectar Mongo", meta: { err } }).catch(() => {});
 }
 
-mongoose.connection.on("connected", () =>
-  console.log("🟢 EVENTO: MongoDB connected()")
-);
-mongoose.connection.on("error", (err) =>
-  console.log("🔴 EVENTO: MongoDB error:", err)
-);
-mongoose.connection.on("disconnected", () =>
-  console.log("🟠 EVENTO: MongoDB disconnected()")
-);
+mongoose.connection.on("connected", () => console.log("🟢 EVENTO: MongoDB connected()"));
+mongoose.connection.on("error", (err) => console.log("🔴 EVENTO: MongoDB error:", err));
+mongoose.connection.on("disconnected", () => console.log("🟠 EVENTO: MongoDB disconnected()"));
 
 // ----------------------
-// ⭐ MODELO MENSAJE
+// Rutas REST básicas
 // ----------------------
-const MensajeSchema = new mongoose.Schema(
-  {
-    tipo: String,
-    texto: String,
-    audio: String,
-    hora: String,
-    emisor: String,
-  },
-  { timestamps: true }
-);
+app.get("/", (req, res) => res.send("Servidor funcionando ✔️"));
 
-const Mensaje = mongoose.model("Mensaje", MensajeSchema);
+// GET rooms (desde mensajes guardados)
+app.get("/api/rooms", async (req, res) => {
+  try {
+    const salas = await Mensaje.distinct("sala");
+    res.json({ ok: true, salas });
+  } catch (err) {
+    await Log.create({ level: "error", msg: "GET /api/rooms error", meta: { err } }).catch(() => {});
+    res.status(500).json({ ok: false, err: "error" });
+  }
+});
+
+// GET mensajes de una sala (incluye deleted=false)
+app.get("/api/mensajes/:sala", async (req, res) => {
+  const { sala } = req.params;
+  try {
+    const msgs = await Mensaje.find({ sala, deleted: false }).sort({ createdAt: 1 });
+    res.json({ ok: true, mensajes: msgs });
+  } catch (err) {
+    await Log.create({ level: "error", msg: "GET /api/mensajes/:sala error", meta: { err } }).catch(() => {});
+    res.status(500).json({ ok: false });
+  }
+});
+
+// GET usuarios online -> solo admin con token en header "x-admin-token" o query ?admin_token=
+const checkAdminReq = (req) => {
+  const token = req.headers["x-admin-token"] || req.query.admin_token;
+  return token && token === process.env.ADMIN_TOKEN;
+};
+
+app.get("/api/usuarios", (req, res) => {
+  if (!checkAdminReq(req)) return res.status(403).json({ ok: false, msg: "admin token required" });
+  const usuarios = Array.from(onlineUsers.values()).map(u => ({ nombre: u.nombre, sala: u.sala, usuarioId: u.usuarioId, ip: u.ip, socketId: u.socketId, isAdmin: !!u.isAdmin }));
+  res.json({ ok: true, usuarios });
+});
+
+// DELETE mensaje por id -> admin required
+app.delete("/api/mensajes/:id", async (req, res) => {
+  if (!checkAdminReq(req)) return res.status(403).json({ ok: false, msg: "admin token required" });
+  try {
+    const { id } = req.params;
+    await Mensaje.findByIdAndUpdate(id, { deleted: true });
+    // notify rooms? we don't know sala here, but emit general event
+    res.json({ ok: true });
+  } catch (err) {
+    await Log.create({ level: "error", msg: "DELETE /api/mensajes/:id error", meta: { err } }).catch(() => {});
+    res.status(500).json({ ok: false });
+  }
+});
 
 // ----------------------
-// ⭐ PUERTO
+// Iniciar server + socket.io
 // ----------------------
 const PORT = process.env.PORT || 3000;
-
 const server = createServer(app);
-
-// ----------------------
-// ⭐ SOCKET.IO
-// ----------------------
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
-  transports: ["websocket"],
+  cors: { origin: "*", methods: ["GET", "POST", "DELETE"] },
+  transports: ["websocket", "polling"],
 });
 
-// ----------------------
-// ⭐ SOCKETS
-// ----------------------
+// Helper: enviar lista de usuarios a admins (o a todos si querés)
+const broadcastUsuarios = () => {
+  const lista = Array.from(onlineUsers.entries()).map(([socketId, u]) => ({ socketId, nombre: u.nombre, sala: u.sala, usuarioId: u.usuarioId, ip: u.ip, isAdmin: !!u.isAdmin }));
+  // enviar solo a sockets que sean admins
+  io.sockets.sockets.forEach((s) => {
+    const meta = onlineUsers.get(s.id);
+    if (meta?.isAdmin) {
+      s.emit("usuarios:lista", lista);
+    }
+  });
+};
+
 io.on("connection", async (socket) => {
-  console.log("🟢 Usuario conectado:", socket.id);
-
-  // -------------------------------------------
-  // ⭐ RECIBIR NOMBRE DEL USUARIO
-  // -------------------------------------------
-  socket.on("setNombre", (nombre) => {
-    socket.data.nombre = nombre;
-    console.log(`🟢 Nombre seteado para ${socket.id}: ${nombre}`);
-  });
-
-  // -------------------------------------------
-  // ⭐ HISTORIAL
-  // -------------------------------------------
   try {
-    const historialBruto = await Mensaje.find().sort({ createdAt: 1 });
+    const ip = socket.handshake.address || socket.conn?.remoteAddress || "unknown";
+    console.log(`🟢 Conexión: ${socket.id} - IP: ${ip}`);
+    await Log.create({ level: "info", msg: "socket connect", meta: { socketId: socket.id, ip } }).catch(() => {});
 
-    const historial = historialBruto.map((m) => ({
-      tipo: m.tipo,
-      texto: m.texto || null,
-      audio: m.audio || null,
-      hora: m.hora,
-      emisor: m.emisor,
-    }));
+    // default user meta (puede setearse desde el front)
+    onlineUsers.set(socket.id, { socketId: socket.id, nombre: "Anon", sala: "global", usuarioId: null, ip, isAdmin: false });
 
-    setTimeout(() => {
-      socket.emit("historial", historial);
-    }, 300);
+    // informar admins la lista actualizada
+    broadcastUsuarios();
+
+    // --------------------------
+    // AUTH ADMIN (en cualquier momento)
+    // --------------------------
+    socket.on("authAdmin", ({ token }) => {
+      const valid = token && token === process.env.ADMIN_TOKEN;
+      if (valid) {
+        const meta = onlineUsers.get(socket.id) || {};
+        meta.isAdmin = true;
+        onlineUsers.set(socket.id, meta);
+        socket.data.isAdmin = true;
+        socket.emit("authAdmin:ok");
+        broadcastUsuarios();
+        Log.create({ level: "info", msg: "admin auth success", meta: { socketId: socket.id } }).catch(() => {});
+        console.log(`🔐 ${socket.id} autenticado como ADMIN`);
+      } else {
+        socket.emit("authAdmin:fail");
+        Log.create({ level: "warn", msg: "admin auth fail", meta: { socketId: socket.id } }).catch(() => {});
+        console.log(`🔒 Intento admin fallido ${socket.id}`);
+      }
+    });
+
+    // --------------------------
+    // setNombre
+    // --------------------------
+    socket.on("setNombre", (nombre) => {
+      const meta = onlineUsers.get(socket.id) || {};
+      meta.nombre = nombre || meta.nombre;
+      onlineUsers.set(socket.id, meta);
+      socket.data.nombre = nombre;
+      broadcastUsuarios();
+    });
+
+    // --------------------------
+    // joinRoom
+    // --------------------------
+    socket.on("joinRoom", async (sala) => {
+      try {
+        socket.join(sala);
+        const meta = onlineUsers.get(socket.id) || {};
+        meta.sala = sala;
+        onlineUsers.set(socket.id, meta);
+        Log.create({ level: "info", msg: "joinRoom", meta: { socketId: socket.id, sala } }).catch(() => {});
+        // enviar historial de esa sala (sin deleted)
+        const historial = await Mensaje.find({ sala, deleted: false }).sort({ createdAt: 1 });
+        socket.emit("historial", historial);
+        broadcastUsuarios();
+      } catch (err) {
+        console.error("joinRoom error", err);
+      }
+    });
+
+    // --------------------------
+    // TYPING
+    // --------------------------
+    socket.on("typing", (data) => {
+      // data: { sala, nombre, usuarioId }
+      if (data?.sala) {
+        socket.to(data.sala).emit("typing", { usuarioId: data.usuarioId, nombre: data.nombre });
+      }
+    });
+
+    socket.on("stopTyping", (data) => {
+      if (data?.sala) {
+        socket.to(data.sala).emit("stopTyping", { usuarioId: data.usuarioId });
+      }
+    });
+
+    // --------------------------
+    // chat:mensaje (guardar con sala)
+    // --------------------------
+    socket.on("chat:mensaje", async (msg) => {
+      try {
+        const meta = onlineUsers.get(socket.id) || {};
+        const nombre = socket.data.nombre || msg.nombre || meta.nombre || socket.id;
+        const usuarioId = msg.emisor || meta.usuarioId || null;
+        const sala = msg.sala || "global";
+
+        const mensajeCompleto = {
+          sala,
+          tipo: "texto",
+          texto: msg.texto,
+          hora: msg.hora,
+          emisor: msg.emisor || socket.id,
+          nombre,
+          usuarioId,
+          ip: meta.ip,
+        };
+
+        const guardado = await Mensaje.create(mensajeCompleto);
+        Log.create({ level: "info", msg: "mensaje creado", meta: { id: guardado._id, sala } }).catch(() => {});
+        io.to(sala).emit("chat:mensaje", guardado);
+      } catch (err) {
+        console.error("chat:mensaje error", err);
+        await Log.create({ level: "error", msg: "chat:mensaje error", meta: { err } }).catch(() => {});
+      }
+    });
+
+    // --------------------------
+    // chat:audio
+    // --------------------------
+    socket.on("chat:audio", async (audioMsg) => {
+      try {
+        const meta = onlineUsers.get(socket.id) || {};
+        const nombre = socket.data.nombre || audioMsg.nombre || meta.nombre || socket.id;
+        const usuarioId = audioMsg.emisor || meta.usuarioId || null;
+        const sala = audioMsg.sala || "global";
+
+        const audioCompleto = {
+          sala,
+          tipo: "audio",
+          audio: audioMsg.audio,
+          hora: audioMsg.hora,
+          emisor: audioMsg.emisor || socket.id,
+          nombre,
+          usuarioId,
+          ip: meta.ip,
+        };
+
+        const guardado = await Mensaje.create(audioCompleto);
+        io.to(sala).emit("chat:audio", guardado);
+      } catch (err) {
+        console.error("chat:audio error", err);
+        await Log.create({ level: "error", msg: "chat:audio error", meta: { err } }).catch(() => {});
+      }
+    });
+
+    // --------------------------
+    // clearHistory (admin required)
+    // --------------------------
+    socket.on("clearHistory", async ({ sala }) => {
+      try {
+        const meta = onlineUsers.get(socket.id);
+        if (!meta?.isAdmin) return socket.emit("error", { msg: "admin required for clearHistory" });
+
+        await Mensaje.updateMany({ sala }, { deleted: true });
+        io.to(sala).emit("historial", []); // notificar a la sala
+        Log.create({ level: "info", msg: "clearHistory", meta: { by: socket.id, sala } }).catch(() => {});
+      } catch (err) {
+        console.error("clearHistory error", err);
+      }
+    });
+
+    // --------------------------
+    // deleteMessage (por id) (admin required)
+    // --------------------------
+    socket.on("deleteMessage", async ({ id }) => {
+      try {
+        const meta = onlineUsers.get(socket.id);
+        if (!meta?.isAdmin) return socket.emit("error", { msg: "admin required for deleteMessage" });
+        const m = await Mensaje.findByIdAndUpdate(id, { deleted: true }, { new: true });
+        if (m) {
+          io.to(m.sala).emit("messageDeleted", { id: m._id });
+          Log.create({ level: "info", msg: "messageDeleted", meta: { id: m._id, by: socket.id } }).catch(() => {});
+        }
+      } catch (err) {
+        console.error("deleteMessage error", err);
+      }
+    });
+
+    // --------------------------
+    // Disconnect
+    // --------------------------
+    socket.on("disconnect", () => {
+      const meta = onlineUsers.get(socket.id);
+      console.log(`🔴 Desconectado: ${socket.id}`, meta || "");
+      onlineUsers.delete(socket.id);
+      broadcastUsuarios();
+    });
+
   } catch (err) {
-    console.log("❌ Error obteniendo historial:", err);
+    console.error("connection handler error", err);
   }
-
-  // -------------------------------------------
-  // 📩 MENSAJE DE TEXTO
-  // -------------------------------------------
-  socket.on("chat:mensaje", async (msg) => {
-    console.log("💬 Evento chat:mensaje recibido:", msg);
-
-    const nombre = socket.data.nombre || msg.emisor || socket.id;
-
-    const mensajeCompleto = {
-      tipo: "texto",
-      texto: msg.texto,
-      hora: msg.hora,
-      emisor: nombre,
-    };
-
-    try {
-      const guardado = await Mensaje.create(mensajeCompleto);
-
-      io.emit("chat:mensaje", {
-        tipo: "texto",
-        texto: guardado.texto,
-        hora: guardado.hora,
-        emisor: guardado.emisor,
-        audio: null,
-      });
-    } catch (err) {
-      console.log("❌ Error guardando mensaje:", err);
-    }
-  });
-
-  // -------------------------------------------
-  // 🎤 MENSAJE DE AUDIO
-  // -------------------------------------------
-  socket.on("chat:audio", async (audioMsg) => {
-    console.log("🎤 Evento chat:audio recibido");
-
-    const nombre = socket.data.nombre || audioMsg.emisor || socket.id;
-
-    const audioCompleto = {
-      tipo: "audio",
-      audio: audioMsg.audio,
-      hora: audioMsg.hora,
-      emisor: nombre,
-    };
-
-    try {
-      const guardado = await Mensaje.create(audioCompleto);
-
-      io.emit("chat:audio", {
-        tipo: "audio",
-        audio: guardado.audio,
-        hora: guardado.hora,
-        emisor: guardado.emisor,
-        texto: null,
-      });
-    } catch (err) {
-      console.log("❌ Error guardando audio:", err);
-    }
-  });
-
-  //----------------------------
-  // 🔌 DESCONECTAR
-  //----------------------------
-  socket.on("disconnect", () => {
-    console.log("🔴 Usuario desconectado:", socket.id);
-  });
 });
 
-// ----------------------
-// 🟢 INICIAR SERVIDOR
-// ----------------------
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor escuchando correctamente en 0.0.0.0:${PORT}`);
 });
